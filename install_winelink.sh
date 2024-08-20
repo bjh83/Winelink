@@ -34,6 +34,7 @@ function run_main()
 {
     export WINEDEBUG=-all # silence winedbg for this instance of the terminal
     local ARG="$1" # store the first argument passed to the script file as a variable here (i.e. 'bash install_winelink.sh vara_only')
+    PACKAGE_MANAGER=apt-get
 
     ### Pre-installation
     run_checkpermissions
@@ -276,6 +277,57 @@ function run_main()
 				;; #/x64)
 			esac #/case $ARCH
 			;; #/"ubuntu"|"linuxmint")
+		"fedora")
+			PACKAGE_MANAGER=dnf
+			run_greeting "${ARCH} ${ID}" "30" "1.5" "${ARG}"
+			run_checkdiskspace "1500" #min space required in MB
+			
+			# TODO: Use the OS-specific package manager to install needed packages? Or do a 'try' in-situ?
+			#sudo dnf install wget p7zip-full cabextract curl megatools zenity -y
+
+			#Make sure system time and certs are up to date (in case system is old or a virtual machine).
+			#Also, if NTP is not installed, install it.
+			ntpq --help &> /dev/null || NTPCHECK="no_ntp" # if an error returns from the command 'ntpq --help' then set NTPCHECK to "no_ntp"
+			if [ "$NTPCHECK" = "no_ntp" ]; then # If ntp time management package doesn't exist, install/configure it
+				sudo dnf install ntp ntpdate -y
+				sudo sed -i 's$#server ntp.your-provider.example$server 10.1.1.1 prefer iburst$g' /etc/ntp.conf
+			fi
+			sudo systemctl stop ntp
+			sudo ntpd -gq
+			sudo systemctl start ntp
+			#sudo apt-get update && apt-get upgrade -y
+			#sudo update-ca-certificates -v
+
+			#Install wine (note: packages are called "wine-stable", not "winehq-stable" like in the Wine wiki).
+			#sudo dpkg --add-architecture i386 # also install wine32 using multi-arch
+			#sudo apt-key del "D43F 6401 4536 9C51 D786 DDEA 76F1 A20F F987 672F" #apt-key is deprecated, but this step is here as a hotfix in case distro has an old winehq gpg key installed
+			#sudo wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key || { echo "unable to download winehq gpg key!" && run_giveup; }
+			#sudo wget -P /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/${VERSION_CODENAME}/winehq-${VERSION_CODENAME}.sources || { echo "unable to download winehq sources file!" && run_giveup; }
+			#sudo sed -i 's&/usr/share/keyrings/winehq-archive.key&/etc/apt/keyrings/winehq-archive.key&g' /etc/apt/sources.list.d/winehq-${VERSION_CODENAME}.sources #fix bug found in the winehq-bullseye.sources file https://bugs.winehq.org/show_bug.cgi?id=53662
+				#Note: Old method for installing key and repo
+				#wget -O - https://dl.winehq.org/wine-builds/winehq.key | sudo apt-key add -
+				#sudo add-apt-repository "deb https://dl.winehq.org/wine-builds/debian/ ${VERSION_CODENAME} main"
+			sudo dnf update
+			sudo dnf install wine -y || { echo "wine instllation failed!" && run_giveup; } #note: winehq-stable is required for debian or else no symlinks will be made in /usr/local/bin/
+				#Note: Method for installing old versions of wine
+				#sudo apt-get install --install-recommends wine-${branch}-amd64=${version}~${dist} --allow-downgrades -y # Allow downgrades so that we can install old versions of wine if desired
+				#sudo apt-get install --install-recommends wine-${branch}-i386=${version}~${dist} wine-${branch}=${version}~${dist} winehq-${branch}=${version}~${dist} --allow-downgrades -y
+
+			#Add the user to the USB dialout group so that they can access radio USB CAT control later.
+			sudo usermod -a -G dialout $USER
+			#sudo reboot # In Ubuntu, "logout/login doesn't work. we have to reboot after doing usermod."
+
+			#Figure out which wine com port to connect RMS Express to in order to get CAT control.
+				#sudo dmesg | grep tty # see if radio USB port is connected to computer (via one of the ttyUSB ports)
+				#ls -l ~/.wine/dosdevices/com* # see if wine is connected to radio USB port (via one of its fake com ports)
+				#Debian 11 & RPiOS (wine-stable ): com5
+				#Linux Mint (wine-devel ): com33
+
+			echo "Installation for this distro is in alpha status."
+			echo "Reboot after installation is required for CAT control"
+			echo "Please report issues to: https://github.com/WheezyE/Winelink/issues"
+			echo ""
+			;; #/"fedora")
 		*)
 			echo "No install path has been scouted for this distro yet."
 			echo "Please post a request on the Winelink Github Issues page:"
@@ -463,6 +515,21 @@ function run_piappswine()
     fi
 }
 
+function sudo_install()
+{
+	local PACKAGE=$1
+	if [[ $PACKAGE_MANAGER == "dnf" && $PACKAGE == "p7zip-full" ]]; then
+		PACKAGE="p7zip p7zip-plugins"
+	fi
+	sudo $PACKAGE_MANAGER install $PACKAGE -y
+}
+
+function sudo_remove()
+{
+	local PACKAGE=$1
+	sudo $PACKAGE_MANAGER remove $PACKAGE -y
+}
+
 function run_installwinemono()  # Wine-mono replaces MS.NET 4.6 and earlier.
 {
 	if [ -d "$HOME/.wine/drive_c/windows/Microsoft.NET/Framework/v4.0.30319" ]
@@ -470,7 +537,7 @@ function run_installwinemono()  # Wine-mono replaces MS.NET 4.6 and earlier.
 	    echo "Wine-mono has already been installed and run. Skipping wine-mono installation."
 	else
 		# MS.NET 4.6 takes a very long time to install on RPi4 in Wine and runs slower than wine-mono
-		sudo apt-get install p7zip-full -y
+		sudo_install p7zip-full
 		mkdir ~/.cache/wine 2>/dev/null
 		echo -e "\n${GREENTXT}Downloading and installing wine-mono . . .${NORMTXT}\n"
 		wget -q -P ~/.cache/wine https://dl.winehq.org/wine/wine-mono/7.2.0/wine-mono-7.2.0-x86.msi  || { echo "wine-mono .msi install file download failed!" && run_giveup; }
@@ -483,8 +550,8 @@ function run_installwinemono()  # Wine-mono replaces MS.NET 4.6 and earlier.
 
 function run_installwinetricks() # Download and install winetricks
 {
-    sudo apt-get remove winetricks -y
-    sudo apt-get install cabextract -y # winetricks needs this
+    sudo_remove winetricks
+    sudo_install cabextract # winetricks needs this
     mkdir downloads 2>/dev/null; cd downloads
         echo -e "\n${GREENTXT}Downloading and installing winetricks . . .${NORMTXT}\n"
         sudo mv /usr/local/bin/winetricks /usr/local/bin/winetricks-old 2>/dev/null # backup any old winetricks installs
@@ -519,7 +586,7 @@ function run_setupwineprefix()  # Set up a new wineprefix silently.  A wineprefi
 
 function run_installahk()
 {
-    sudo apt-get install p7zip-full -y # TODO: remove redundant apt-get installs - put them at top of script.
+    sudo_install p7zip-full # TODO: remove redundant apt-get installs - put them at top of script.
     mkdir downloads 2>/dev/null; cd downloads
         # Download AutoHotKey
 	echo -e "\n${GREENTXT}Downloading AutoHotkey . . .${NORMTXT}\n"
@@ -537,7 +604,7 @@ function run_installrmsexpress()  # Download/extract/install RMS Express
     mkdir downloads 2>/dev/null; cd downloads
         # Download RMS Express (no matter its version number) [https://downloads.winlink.org/User%20Programs/]
             echo -e "\n${GREENTXT}Downloading and installing RMS Express . . .${NORMTXT}\n"
-            wget -q -r -l1 -np -nd -A "Winlink_Express_install_*.zip" https://downloads.winlink.org/User%20Programs || { echo "RMS Express download failed!" && run_giveup; }
+            wget -r -l1 -np -nd --accept-regex "Winlink_Express_install_.*\.zip" https://downloads.winlink.org/User%20Programs || { echo "RMS Express download failed!" && run_giveup; }
         
         # We could also use curl if we don't want to use wget to find the link . . .
             #RMSLINKPREFIX="https://downloads.winlink.org"
@@ -572,7 +639,10 @@ function run_installrmsterminal()
     mkdir downloads 2>/dev/null; cd downloads
         # Download RMS Terminal (no matter its version number) [https://downloads.winlink.org/Sysop%20Programs/]
             echo -e "\n${GREENTXT}Downloading and installing RMS Simple Terminal . . .${NORMTXT}\n"
-            wget -q -r -l1 -np -nd -A "RMS_Simple_Terminal_install_*.zip" https://downloads.winlink.org/Sysop%20Programs || { echo "RMS Simple Terminal download failed!" && run_giveup; }
+            wget -r -l1 -np -nd --accept-regex "RMS_Simple_Terminal_install_.*\.zip" https://downloads.winlink.org/Sysop%20Programs
+	    if ! compgen -G "RMS_Simple_Terminal_install_*.zip" > /dev/null; then
+		    echo "RMS Simple Terminal download failed!" && run_giveup;
+	    fi
 
         # Extract/install RMS Terminal
             7z x RMS_Simple_Terminal_install_*.zip -o"RMSTerminalInstaller" -y -bsp0 -bso0
@@ -601,7 +671,10 @@ function run_installrmstrimode()  # Download/extract/install RMS Express
     mkdir downloads 2>/dev/null; cd downloads
         # Download RMS Trimode (no matter its version number) [https://downloads.winlink.org/Sysop%20Programs/]
             echo -e "\n${GREENTXT}Downloading and installing RMS Trimode . . .${NORMTXT}\n"
-            wget -q -r -l1 -np -nd -A "RMS_Trimode_install_*.zip" https://downloads.winlink.org/Sysop%20Programs || { echo "RMS Trimode download failed!" && run_giveup; }
+            wget -r -l1 -np -nd --accept-regex "RMS_Trimode_install_.*\.zip" https://downloads.winlink.org/Sysop%20Programs
+	    if ! compgen -G "RMS_Trimode_install_*.zip" > /dev/null; then
+		    echo "RMS Trimode download failed!" && run_giveup;
+	    fi
 
         # We could also use curl if we don't want to use wget to find the link . . .
             #RMSTRILINKPREFIX="https://downloads.winlink.org"
@@ -636,7 +709,10 @@ function run_installrmsadifanalyzer()
     mkdir downloads 2>/dev/null; cd downloads
         # Download RMS ADIF Analyzer (no matter its version number) [https://downloads.winlink.org/Sysop%20Programs/]
             echo -e "\n${GREENTXT}Downloading and installing ADIF Analyzer (companion app for RMS Trimode) . . .${NORMTXT}\n"
-            wget -q -r -l1 -np -nd -A "ADIF_Analyzer_install_*.zip" https://downloads.winlink.org/Sysop%20Programs || { echo "RMS ADIF Analyzer download failed!" && run_giveup; }
+            wget -r -l1 -np -nd --accept-regex "ADIF_Analyzer_install.*\.zip" https://downloads.winlink.org/Sysop%20Programs 
+	    if ! compgen -G "ADIF_Analyzer_install*.zip" > /dev/null; then
+		    echo "RMS ADIF Analyzer download failed!" && run_giveup;
+	    fi
 
         # Extract/install RMS ADIF Analyzer
             7z x ADIF_Analyzer_install_*.zip -o"RMSADIFInstaller" -y -bsp0 -bso0
@@ -666,7 +742,10 @@ function run_installrmspacket()
     mkdir downloads 2>/dev/null; cd downloads
         # Download RMS Packet (no matter its version number) [https://downloads.winlink.org/Sysop%20Programs/]
             echo -e "\n${GREENTXT}Downloading and installing RMS Packet . . .${NORMTXT}\n"
-            wget -q -r -l1 -np -nd -A "RMS_Packet_install_*.zip" https://downloads.winlink.org/Sysop%20Programs || { echo "RMS Packet download failed!" && run_giveup; }
+            wget -r -l1 -np -nd --accept-regex "RMS_Packet_install_.*\.zip" https://downloads.winlink.org/Sysop%20Programs
+	    if ! compgen -G "RMS_Packet_install_*.zip" > /dev/null; then
+		    echo "RMS Packet download failed!" && run_giveup;
+	    fi
 
         # Extract/install RMS Packet
             7z x RMS_Packet_install_*.zip -o"RMSPacketInstaller" -y -bsp0 -bso0
@@ -695,7 +774,10 @@ function run_installrmsrelay()
     mkdir downloads 2>/dev/null; cd downloads
         # Download RMS Relay (no matter its version number) [https://downloads.winlink.org/Sysop%20Programs/]
             echo -e "\n${GREENTXT}Downloading and installing RMS Relay . . .${NORMTXT}\n"
-            wget -q -r -l1 -np -nd -A "RMS_Relay_install_*.zip" https://downloads.winlink.org/Sysop%20Programs || { echo "RMS Relay download failed!" && run_giveup; }
+            wget -r -l1 -np -nd --accept-regex "RMS_Relay_install_.*\.zip" https://downloads.winlink.org/Sysop%20Programs
+	    if ! compgen -G "RMS_Relay_install_*.zip" > /dev/null; then
+		    echo "RMS Relay download failed!" && run_giveup;
+	    fi
 
         # Extract/install RMS Relay
             7z x RMS_Relay_install_*.zip -o"RMSRelayInstaller" -y -bsp0 -bso0
@@ -724,7 +806,10 @@ function run_installrmslinktest()
     mkdir downloads 2>/dev/null; cd downloads
         # Download RMS Link Test (no matter its version number) [https://downloads.winlink.org/Sysop%20Programs/]
             echo -e "\n${GREENTXT}Downloading and installing RMS Link Test . . .${NORMTXT}\n"
-            wget -q -r -l1 -np -nd -A "RMS_Link_Test_install_*.zip" https://downloads.winlink.org/Sysop%20Programs || { echo "RMS Link Test download failed!" && run_giveup; }
+            wget -r -l1 -np -nd --accept-regex "RMS_Link_Test_install_.*\.zip" https://downloads.winlink.org/Sysop%20Programs
+	    if ! compgen -G "RMS_Link_Test_install_*.zip" > /dev/null; then
+		    echo "RMS Link Test download failed!" && run_giveup;
+	    fi
 
         # Extract/install RMS Link Test
             7z x RMS_Link_Test_install_*.zip -o"RMSLinkTestInstaller" -y -bsp0 -bso0
@@ -760,7 +845,7 @@ function run_installvarAC()  # Download/extract/install varAC chat app
             7z x varac_latest -aoa -y -o"${HOME}/.wine/drive_c/VarAC" -bsp0 -bso0
             
 	# Extract VarAC Windows icon then convert it to png for Linux
-	    sudo apt-get install icoutils -y # installs wrestool & icotool
+	    sudo_install icoutils # installs wrestool & icotool
             wrestool -x --output=${HOME}'/.wine/drive_c/VarAC/varac.ico' -t14 ${HOME}'/.wine/drive_c/VarAC/VarAC.exe' 2>/dev/null; # extract ico from exe
             mkdir ${HOME}'/.wine/drive_c/VarAC/img/' 2>/dev/null;
             icotool -x -o ${HOME}'/.wine/drive_c/VarAC/img/' ${HOME}'/.wine/drive_c/VarAC/varac.ico' 2>/dev/null; # extract png from ico
@@ -859,7 +944,9 @@ function run_varACsetup() # TODO: This is a kludge until VarAC can be patched to
 
 function run_installvara()  # Download / extract / install VARA HF/FM/Chat
 {
-    sudo apt-get install curl megatools p7zip-full -y
+    sudo_install curl
+    sudo_install megatools
+    sudo_install p7zip-full
     
     # Make the VARA Update script, then run it in silent mode (to install VARA Suite)
         run_makevaraupdatescript
@@ -932,7 +1019,7 @@ function run_makevaraupdatescript()
 			# Download / extract / silently install VARA HF
 				# Search the winlink.org website for a VARA HF link of any version, then download it
 					echo -e "\n${GREENTXT}Downloading VARA HF . . .${NORMTXT}\n"
-     					wget -q -r -l1 -np -nd "https://downloads.winlink.org/VARA%20Products" -A "VARA HF*setup.zip" -P ${VARAUPDATE} || error 'Failed to download VARA HF Installer from winlink.org'
+     					wget -r -l1 -np -nd "https://downloads.winlink.org/VARA%20Products" --accept-regex "VARA HF.*setup.zip" -P ${VARAUPDATE} || error 'Failed to download VARA HF Installer from winlink.org'
 					7z x ${VARAUPDATE}/VARA\ HF*.zip -o"${VARAUPDATE}/VARAHFInstaller" -y -bsp0 -bso0
 					mv ${VARAUPDATE}/VARAHFInstaller/VARA\ setup*.exe ~/.wine/drive_c/ # move VARA installer into wineprefix (so AHK can find it)
 
@@ -970,7 +1057,7 @@ function run_makevaraupdatescript()
 			# Download / extract / silently install VARA FM
 				# Search the rosmodem website for a VARA FM mega.nz link of any version, then download it
 					echo -e "\n${GREENTXT}Downloading VARA FM . . .${NORMTXT}\n"
-					wget -q -r -l1 -np -nd "https://downloads.winlink.org/VARA%20Products" -A "VARA FM*setup.zip" -P ${VARAUPDATE} || error 'Failed to download VARA FM Installer from winlink.org'
+					wget -r -l1 -np -nd "https://downloads.winlink.org/VARA%20Products" --accept-regex "VARA FM.*setup.zip" -P ${VARAUPDATE} || error 'Failed to download VARA FM Installer from winlink.org'
 					7z x ${VARAUPDATE}/VARA\ FM*.zip -o"${VARAUPDATE}/VARAFMInstaller" -y -bsp0 -bso0
 					mv ${VARAUPDATE}/VARAFMInstaller/VARA\ FM\ setup*.exe ~/.wine/drive_c/ # move VARA installer here (so AHK can find it later)
 
@@ -1008,7 +1095,7 @@ function run_makevaraupdatescript()
 		#	# Download / extract / silently install VARA SAT
 		#		# Search the rosmodem website for a VARA SAT mega.nz link of any version, then download it
 		#			echo -e "\n${GREENTXT}Downloading VARA SAT . . .${NORMTXT}\n"
-		#			wget -q -r -l1 -np -nd "https://downloads.winlink.org/VARA%20Products" -A "VARA SAT*setup.zip" -P ${VARAUPDATE} || error 'Failed to download VARA SAT Installer from winlink.org'
+		#			wget -r -l1 -np -nd "https://downloads.winlink.org/VARA%20Products" --accept-regex "VARA SAT.*setup.zip" -P ${VARAUPDATE} || error 'Failed to download VARA SAT Installer from winlink.org'
 		#			7z x ${VARAUPDATE}/VARA\ SAT*.zip -o"${VARAUPDATE}/VARASATInstaller" -y -bsp0 -bso0
 		#			mv ${VARAUPDATE}/VARASATInstaller/VARA\ SAT\ setup*.exe ~/.wine/drive_c/ # move VARA installer here (so AHK can find it later)
 		#
@@ -1046,7 +1133,7 @@ function run_makevaraupdatescript()
 			# Download / extract / silently install VARA Chat
 				# Search the rosmodem website for a VARA Chat mega.nz link of any version, then download it
 					echo -e "\n${GREENTXT}Downloading VARA Chat . . .${NORMTXT}\n"
-					wget -q -r -l1 -np -nd "https://downloads.winlink.org/VARA%20Products" -A "VARA Chat*setup.zip" -P ${VARAUPDATE} || error 'Failed to download VARA HF Installer from winlink.org'
+					wget -r -l1 -np -nd "https://downloads.winlink.org/VARA%20Products" --accept-regex "VARA Chat.*setup.zip" -P ${VARAUPDATE} || error 'Failed to download VARA HF Installer from winlink.org'
 					7z x ${VARAUPDATE}/VARA\ Chat*.zip -o"${VARAUPDATE}/VARAChatInstaller" -y -bsp0 -bso0
 
 				# Run the VARA Chat installer silently
@@ -1262,7 +1349,7 @@ function run_makevarasoundcardsetupscript()
 
 function run_makewineserverkscript()  # Make a script for the desktop that will rest wine in case it freezes/crashes
 {
-    sudo apt-get install zenity -y
+    sudo_install zenity
     # Create 'Reset\ Wine.sh'
         echo '#!/bin/bash'                                                                                         > ${HOME}/winelink/Reset\ Wine
         echo ''                                                                                                    >> ${HOME}/winelink/Reset\ Wine
